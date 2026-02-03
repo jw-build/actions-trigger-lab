@@ -4,16 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "Action (deploy|rollback|scan|report)"
+        description: "Action (deploy|rollback|scan|report|ping)"
         required: true
         default: "scan"
       args:
-        description: "Args as JSON object (e.g. {\"env\":\"dev\"})"
+        description: "Args as JSON object (e.g. {\"env\":\"dev\",\"version\":\"v0.1.0\"})"
         required: false
         default: "{}"
       request_id:
         description: "Request ID"
         required: false
+
   repository_dispatch:
     types: [dispatch]
 
@@ -31,61 +32,87 @@ jobs:
       - name: validate action allowlist
         shell: bash
         run: |
-          ACTION='${{ github.event.client_payload.action }}'
-          ENV='${{ github.event.client_payload.env }}'
-          REQ='${{ github.event.client_payload.request_id }}'
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ACTION='${{ github.event.inputs.action }}'
+            REQ='${{ github.event.inputs.request_id }}'
+            ENV=$(echo '${{ github.event.inputs.args }}' | jq -r '.env // empty')
+          else
+            ACTION='${{ github.event.client_payload.action }}'
+            REQ='${{ github.event.client_payload.request_id }}'
+            ENV='${{ github.event.client_payload.args.env }}'
+          fi
 
           echo "action=$ACTION env=$ENV request_id=$REQ"
 
           case "$ACTION" in
-            ping|deploy|rollback) ;;
+            ping|deploy|rollback|scan|report) ;;
             *) echo "ERROR: action not allowed: $ACTION"; exit 1 ;;
           esac
 
-          case "$ENV" in
-            dev|staging|prod) ;;
-            *) echo "ERROR: env not allowed: $ENV"; exit 1 ;;
-          esac
+          # env only required for actions that need it
+          if [ "$ACTION" = "deploy" ] || [ "$ACTION" = "rollback" ] || [ "$ACTION" = "scan" ] || [ "$ACTION" = "report" ]; then
+            case "$ENV" in
+              dev|staging|prod) ;;
+              *) echo "ERROR: env not allowed or missing: $ENV"; exit 1 ;;
+            esac
+          fi
 
       - name: simulate action
         shell: bash
         run: |
-          ACTION='${{ github.event.client_payload.action }}'
-          ENV='${{ github.event.client_payload.env }}'
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ACTION='${{ github.event.inputs.action }}'
+            ARGS='${{ github.event.inputs.args }}'
+            ENV=$(echo "$ARGS" | jq -r '.env // empty')
+            VERSION=$(echo "$ARGS" | jq -r '.version // empty')
+            TO=$(echo "$ARGS" | jq -r '.to // empty')
+          else
+            ACTION='${{ github.event.client_payload.action }}'
+            ENV='${{ github.event.client_payload.args.env }}'
+            VERSION='${{ github.event.client_payload.args.version }}'
+            TO='${{ github.event.client_payload.args.to }}'
+          fi
 
           if [ "$ACTION" = "ping" ]; then
             echo "pong"
           elif [ "$ACTION" = "deploy" ]; then
-            echo "SIMULATE deploy to $ENV"
+            echo "SIMULATE deploy to $ENV version=$VERSION"
           elif [ "$ACTION" = "rollback" ]; then
-            echo "SIMULATE rollback on $ENV"
+            echo "SIMULATE rollback on $ENV to=$TO"
+          else
+            echo "SIMULATE $ACTION env=$ENV"
           fi
 
+      # IMPORTANT: avoid loop (repository_dispatch -> worker -> repository_dispatch ...)
       - name: Call gateway (v1 format)
-        if: ${{ github.event.client_payload.action != 'ping' || github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GATEWAY_URL: https://actions-gateway-worker.f547x1.workers.dev
           API_KEY: ${{ secrets.ACTIONS_GATEWAY_API_KEY }}
-          V1_ACTION: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.action || github.event.inputs.action }}
-          V1_REQ_ID: ${{ github.event.client_payload.request_id || github.event.inputs.request_id || format('req-{0}', github.run_id) }}
-          V1_ARGS_REPO: ${{ github.event_name == 'repository_dispatch' && toJson({ env: github.event.client_payload.env }) || '{}' }}
+          V1_ACTION: ${{ github.event.inputs.action }}
+          V1_REQ_ID: ${{ github.event.inputs.request_id || format('req-{0}', github.run_id) }}
           V1_ARGS_INPUT: ${{ github.event.inputs.args }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
-            V1_ARGS="$V1_ARGS_REPO"
-          else
-            V1_ARGS="${V1_ARGS_INPUT:-{}}"
-          fi
+          set -euo pipefail
+          V1_ARGS="${V1_ARGS_INPUT:-{}}"
           BODY=$(printf '{"action":"%s","args":%s,"request_id":"%s"}' "$V1_ACTION" "$V1_ARGS" "$V1_REQ_ID")
-          echo "POST $GATEWAY_URL/v1/dispatch (v1 format)"
+
+          echo "POST $GATEWAY_URL/v1/dispatch"
           echo "body: $BODY"
+
           curl -sS -X POST "$GATEWAY_URL/v1/dispatch" \
             -H "x-api-key: $API_KEY" \
             -H "Content-Type: application/json" \
             -d "$BODY" | tee /tmp/gateway-resp.json
+
           if ! jq -e '.ok == true' /tmp/gateway-resp.json >/dev/null 2>&1; then
             echo "Gateway call failed"
+            cat /tmp/gateway-resp.json || true
             exit 1
           fi
+
           echo "Gateway responded OK"
