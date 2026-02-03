@@ -1,0 +1,17 @@
+name: demo
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [demo]
+
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - name: show event
+        run: |
+          echo "event name: ${{ github.event_name }}"
+          echo "event type: ${{ github.event.action }}"
+          echo "payload:"
+          echo '${{ toJson(github.event.client_payload) }}'
