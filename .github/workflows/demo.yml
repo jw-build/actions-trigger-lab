@@ -2,6 +2,18 @@ name: demo
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: "Action (deploy|rollback|scan|report)"
+        required: true
+        default: "scan"
+      args:
+        description: "Args as JSON object (e.g. {\"env\":\"dev\"})"
+        required: false
+        default: "{}"
+      request_id:
+        description: "Request ID"
+        required: false
   repository_dispatch:
     types: [dispatch]
 
@@ -48,3 +60,32 @@ jobs:
           elif [ "$ACTION" = "rollback" ]; then
             echo "SIMULATE rollback on $ENV"
           fi
+
+      - name: Call gateway (v1 format)
+        if: ${{ github.event.client_payload.action != 'ping' || github.event_name == 'workflow_dispatch' }}
+        env:
+          GATEWAY_URL: https://actions-gateway-worker.f547x1.workers.dev
+          API_KEY: ${{ secrets.ACTIONS_GATEWAY_API_KEY }}
+          V1_ACTION: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.action || github.event.inputs.action }}
+          V1_REQ_ID: ${{ github.event.client_payload.request_id || github.event.inputs.request_id || format('req-{0}', github.run_id) }}
+          V1_ARGS_REPO: ${{ github.event_name == 'repository_dispatch' && toJson({ env: github.event.client_payload.env }) || '{}' }}
+          V1_ARGS_INPUT: ${{ github.event.inputs.args }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            V1_ARGS="$V1_ARGS_REPO"
+          else
+            V1_ARGS="${V1_ARGS_INPUT:-{}}"
+          fi
+          BODY=$(printf '{"action":"%s","args":%s,"request_id":"%s"}' "$V1_ACTION" "$V1_ARGS" "$V1_REQ_ID")
+          echo "POST $GATEWAY_URL/v1/dispatch (v1 format)"
+          echo "body: $BODY"
+          curl -sS -X POST "$GATEWAY_URL/v1/dispatch" \
+            -H "x-api-key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" | tee /tmp/gateway-resp.json
+          if ! jq -e '.ok == true' /tmp/gateway-resp.json >/dev/null 2>&1; then
+            echo "Gateway call failed"
+            exit 1
+          fi
+          echo "Gateway responded OK"
