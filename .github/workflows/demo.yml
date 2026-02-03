@@ -3,15 +3,48 @@ name: demo
 on:
   workflow_dispatch:
   repository_dispatch:
-    types: [demo]
+    types: [dispatch]
 
 jobs:
-  hello:
+  dispatch:
     runs-on: ubuntu-latest
     steps:
-      - name: show event
+      - name: show payload
         run: |
-          echo "event name: ${{ github.event_name }}"
-          echo "event type: ${{ github.event.action }}"
+          echo "event: ${{ github.event_name }}"
+          echo "type:  ${{ github.event.action }}"
           echo "payload:"
           echo '${{ toJson(github.event.client_payload) }}'
+
+      - name: validate action allowlist
+        shell: bash
+        run: |
+          ACTION='${{ github.event.client_payload.action }}'
+          ENV='${{ github.event.client_payload.env }}'
+          REQ='${{ github.event.client_payload.request_id }}'
+
+          echo "action=$ACTION env=$ENV request_id=$REQ"
+
+          case "$ACTION" in
+            ping|deploy|rollback) ;;
+            *) echo "ERROR: action not allowed: $ACTION"; exit 1 ;;
+          esac
+
+          case "$ENV" in
+            dev|staging|prod) ;;
+            *) echo "ERROR: env not allowed: $ENV"; exit 1 ;;
+          esac
+
+      - name: simulate action
+        shell: bash
+        run: |
+          ACTION='${{ github.event.client_payload.action }}'
+          ENV='${{ github.event.client_payload.env }}'
+
+          if [ "$ACTION" = "ping" ]; then
+            echo "pong"
+          elif [ "$ACTION" = "deploy" ]; then
+            echo "SIMULATE deploy to $ENV"
+          elif [ "$ACTION" = "rollback" ]; then
+            echo "SIMULATE rollback on $ENV"
+          fi
