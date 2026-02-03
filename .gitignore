@@ -1,0 +1,13 @@
+# Local config (PAT, secrets) - do not commit
+local.env
+.env
+.env.local
+*.env.local
+
+# GitHub App private key - do not commit
+*.pem
+
+# Python venv
+.venv
+venv
+env

@@ -1,6 +1,6 @@
 """
-用 GitHub App 触发 repository_dispatch（替代 PAT）。
-需要环境变量：APP_ID, OWNER, REPO, PRIVATE_KEY_PEM
+Trigger repository_dispatch via GitHub App (replaces PAT).
+Env: APP_ID, OWNER, REPO, PRIVATE_KEY_PEM
 """
 import os
 import time
@@ -25,7 +25,7 @@ payload = {
 
 app_jwt = jwt.encode(payload, private_key, algorithm="RS256")
 
-# 1) 找到安装在该 repo 的 installation id
+# 1) Get installation id for this repo
 headers = {
     "Authorization": f"Bearer {app_jwt}",
     "Accept": "application/vnd.github+json",
@@ -34,7 +34,7 @@ r = requests.get(f"https://api.github.com/repos/{OWNER}/{REPO}/installation", he
 r.raise_for_status()
 installation_id = r.json()["id"]
 
-# 2) 用 installation id 换 installation access token
+# 2) Exchange installation id for access token
 r = requests.post(
     f"https://api.github.com/app/installations/{installation_id}/access_tokens",
     headers=headers,
@@ -42,7 +42,7 @@ r = requests.post(
 r.raise_for_status()
 inst_token = r.json()["token"]
 
-# 3) 用 installation token 触发 repository_dispatch
+# 3) Trigger repository_dispatch with installation token
 headers2 = {
     "Authorization": f"Bearer {inst_token}",
     "Accept": "application/vnd.github+json",
